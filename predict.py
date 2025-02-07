@@ -3,7 +3,9 @@ import os.path
 import random
 import sys
 
+from scanpath_analyzer import ScanpathAnalyzer
 import torch
+import numpy as np
 from lightning import Trainer
 from tqdm import tqdm
 
@@ -28,64 +30,80 @@ def define_args(parent_parser):
         default=None,
     )
     parser.add_argument(
-        "--animate",
-        help="animate visualizations",
-        type=bool,
-        default=False,
-        action=argparse.BooleanOptionalAction
+        "--animate", help="animate visualizations", type=bool, default=False, action=argparse.BooleanOptionalAction
     )
-    parser.add_argument(
-        "--model-checkpoint",
-        help='path to a saved model state',
-        type=str,
-        required=True
-    )
-    parser.add_argument(
-        "--random-samples",
-        help='sample random images from the dataset',
-        type=int,
-        default=None
-    )
+    parser.add_argument("--model-checkpoint", help="path to a saved model state", type=str, required=True)
+    parser.add_argument("--random-samples", help="sample random images from the dataset", type=int, default=None)
     parser.add_argument(
         "--save-all",
-        help='save all visualisation elements',
+        help="save all visualisation elements",
         type=bool,
         default=False,
-        action=argparse.BooleanOptionalAction
+        action=argparse.BooleanOptionalAction,
     )
     parser.add_argument(
         "--dump-avg-state",
-        help='dump average state values',
+        help="dump average state values",
         type=bool,
         default=False,
-        action=argparse.BooleanOptionalAction
+        action=argparse.BooleanOptionalAction,
     )
     parser.add_argument(
         "--replace-state",
-        help='replace state element with value from file',
+        help="replace state element with value from file",
         type=str,
         default=None,
-        choices=['patches', 'coords', 'importance', 'latent']
+        choices=["patches", "coords", "importance", "latent"],
     )
     return parent_parser
 
 
 def visualize(visualization_path, data_hook, model, save_all=False, animate=False):
     data = data_hook.compute()
+    analyzer = ScanpathAnalyzer()
 
     rev_normalizer = RevNormalizer()
     images = rev_normalizer(data["images"]).to(torch.uint8)
     patches = rev_normalizer(data["patches"]).to(torch.uint8)
 
-    for idx, (img, out, coord, patch, score, target, done) in enumerate(tqdm(
-            zip(images, data["out"], data["coords"], patches, data['scores'], data['targets'], data['done']),
-            total=images.shape[0])):
+    for idx, (img, out, coord, patch, score, target, done) in enumerate(
+        tqdm(
+            zip(images, data["out"], data["coords"], patches, data["scores"], data["targets"], data["done"]),
+            total=images.shape[0],
+        )
+    ):
+
+        # Track scanpath
+        analyzer.track_model_scanpath(f"img_{idx}", coord.cpu().numpy(), idx)
+        np.save(os.path.join(visualization_path, f"scanpath_{idx}.npy"), analyzer.model_scanpaths[f"img_{idx}"])
+
         if animate:
-            animate_one(model, img, out, coord, patch, score, target, done,
-                        os.path.join(visualization_path, f"{idx}.mp4"), rev_normalizer)
+            animate_one(
+                model,
+                img,
+                out,
+                coord,
+                patch,
+                score,
+                target,
+                done,
+                os.path.join(visualization_path, f"{idx}.mp4"),
+                rev_normalizer,
+            )
         else:
-            visualize_grid(model, img, out, coord, patch, score, target, done,
-                           os.path.join(visualization_path, f"{idx}.png"), rev_normalizer, save_all)
+            visualize_grid(
+                model,
+                img,
+                out,
+                coord,
+                patch,
+                score,
+                target,
+                done,
+                os.path.join(visualization_path, f"{idx}.png"),
+                rev_normalizer,
+                save_all,
+            )
 
 
 def dump_avg_state(data_hook):
@@ -94,19 +112,15 @@ def dump_avg_state(data_hook):
     avg_coords = data["coords"].mean(dim=0).mean(dim=0)
     avg_importance = data["importance"][-1].mean(dim=0).mean(dim=0)
     avg_latent = data["latent"].mean(dim=0).mean(dim=0)
-    torch.save({
-        "avg_patch": avg_patch,
-        "avg_coords": avg_coords,
-        "avg_importance": avg_importance,
-        "avg_latent": avg_latent
-    }, 'avg_state.pck')
+    torch.save(
+        {"avg_patch": avg_patch, "avg_coords": avg_coords, "avg_importance": avg_importance, "avg_latent": avg_latent},
+        "avg_state.pck",
+    )
 
 
 def main():
     model: BaseRlMAE
-    data_module, model, args = experiment_from_args(
-        sys.argv, add_argparse_args_fn=define_args
-    )
+    data_module, model, args = experiment_from_args(sys.argv, add_argparse_args_fn=define_args)
 
     data_module.num_random_eval_samples = args.random_samples
     model.parallel_games = 0
@@ -123,12 +137,12 @@ def main():
         data_hook = model.add_user_forward_hook(RLUserHook(avg_latent=args.dump_avg_state))
 
     if args.replace_state is not None:
-        avg_state = torch.load('avg_state.pck')
+        avg_state = torch.load("avg_state.pck")
         replacement = {
-            'patches': 'avg_patch',
-            'coords': 'avg_coords',
-            'importance': 'avg_importance',
-            'latent': 'avg_latent'
+            "patches": "avg_patch",
+            "coords": "avg_coords",
+            "importance": "avg_importance",
+            "latent": "avg_latent",
         }[args.replace_state]
         model.add_user_forward_hook(RLStateReplaceHook(**{replacement: avg_state[replacement]}))
 
